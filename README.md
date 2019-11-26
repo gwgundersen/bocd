@@ -1,4 +1,4 @@
-**Bayesian Online Changepoint Detection**
+### Bayesian Online Changepoint Detection
 
 Python implementation of Bayesian online changepoint detection for a normal
 model with unknown mean parameter. For details, see Adams & MacKay 2007:
