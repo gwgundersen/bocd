@@ -1,15 +1,19 @@
 """============================================================================
+Author: Gregory Gundersen
+
 Python implementation of Bayesian online changepoint detection for a normal
 model with unknown mean parameter. For details, see Adams & MacKay 2007:
 
     "Bayesian Online Changepoint Detection"
     https://arxiv.org/abs/0710.3742
 
-This code implements the figure in the following blog post:
+    "Conjugate Bayesian analysis of the Gaussian distribution"
+    https://www.cs.ubc.ca/~murphyk/Papers/bayesGauss.pdf
+
+This code is associated with the following blog posts:
 
     http://gregorygundersen.com/blog/2019/08/13/bocd/
-
-Author: Gregory Gundersen
+    http://gregorygundersen.com/blog/2020/10/20/implementing-bocd/
 ============================================================================"""
 
 import matplotlib.pyplot as plt
@@ -25,14 +29,13 @@ def bocd(data, model, hazard):
     """
     # 1. Initialize lower triangular matrix representing the posterior as
     # function of time. Model parameters are initialized in the model class.
-    R = np.zeros((T + 1, T + 1))
+    R       = np.zeros((T+1, T+1))
     R[0, 0] = 1
     message = np.array([1])
 
-    for t in range(1, T + 1):
-
+    for t in range(1, T+1):
         # 2. Observe new datum.
-        x = data[t - 1]
+        x = data[t-1]
 
         # 3. Evaluate predictive probabilities.
         pis = model.pred_prob(t, x)
@@ -45,14 +48,15 @@ def bocd(data, model, hazard):
 
         # 6. Calculate evidence
         new_joint = np.append(cp_prob, growth_probs)
+        evidence  = np.sum(new_joint)
 
         # 7. Determine run length distribution.
-        R[t, :t + 1] = new_joint
-        evidence = sum(new_joint)
-        R[t, :] /= evidence
+        R[t, :t+1] = new_joint
+        if evidence > 0:
+            R[t, :t+1] /= evidence
 
         # 8. Update sufficient statistics.
-        model.update_statistics(t, x)
+        model.update_params(t, x)
 
         # Setup message passing.
         message = new_joint
@@ -62,64 +66,71 @@ def bocd(data, model, hazard):
 
 # -----------------------------------------------------------------------------
 
-# Implementation of a Gaussian model with known precision. See Kevin Murphy's
-# "Conjugate Bayesian analysis of the Gaussian distribution" for a complete
-# derivation of the model:
-#
-#     https://www.cs.ubc.ca/~murphyk/Papers/bayesGauss.pdf
-#
-class NormalKnownPrecision:
 
-    def __init__(self, mean0, prec0):
-        """Initialize model parameters.
+class GaussianUnknownMean:
+    
+    def __init__(self, mean0, var0, varx):
+        """Initialize model.
+        
+        meanx is unknown; varx is known
+        p(meanx) = N(mean0, var0)
+        p(x) = N(meanx, varx)
         """
         self.mean0 = mean0
-        self.prec0 = prec0
+        self.var0  = var0
+        self.varx  = varx
         self.mean_params = np.array([mean0])
-        self.prec_params = np.array([prec0])
+        self.prec_params = np.array([1/var0])
 
     def pred_prob(self, t, x):
-        """Compute predictive probabilities.
+        """Compute predictive probabilities pi, i.e. the posterior predictive
+        for each run length hypothesis.
         """
-        d = lambda x, mu, tau: norm.pdf(x, mu, 1 / tau + 1)
-        return np.array([d(x, self.mean_params[i], self.prec_params[i])
-                         for i in range(t)])
-
-    def update_statistics(self, t, x):
-        """Update sufficient statistics.
+        preds = np.empty(t)
+        for n in range(t):
+            # Posterior predictive: see eq. 40 in (Murphy 2007).
+            mean_n   = self.mean_params[n]
+            var_n    = 1. / self.prec_params[n]
+            preds[n] = norm.pdf(x, mean_n, var_n + self.varx)
+        return preds
+    
+    def update_params(self, t, x):
+        """Upon observing a new datum x at time t, update all run length 
+        hypotheses.
         """
-        # `offsets` is just a clever way to +1 all the sufficient statistics.
-        offsets = np.arange(1, t + 1)
-        new_mean_params = (self.mean_params * offsets + x) / (offsets + 1)
-        new_prec_params = self.prec_params + 1
+        # See eq. 19 in (Murphy 2007).
+        new_prec_params  = self.prec_params + (1/self.varx)
+        self.prec_params = np.append([1/self.var0], new_prec_params)
+        # See eq. 24 in (Murphy 2007).
+        new_mean_params  = (self.mean_params * self.prec_params[:-1] + \
+                            (x / self.varx)) / new_prec_params
         self.mean_params = np.append([self.mean0], new_mean_params)
-        self.prec_params = np.append([self.prec0], new_prec_params)
 
 
 # -----------------------------------------------------------------------------
 
-def generate_data(mean0, prec0, T, cp_prob):
+def generate_data(varx, mean0, var0, T, cp_prob):
     """Generate partitioned data of T observations according to constant
     changepoint probability `cp_prob` with hyperpriors `mean0` and `prec0`.
     """
-    means = [0]
-    data = []
-    cpts = []
+    data  = []
+    cps   = []
+    meanx = mean0
     for t in range(0, T):
         if np.random.random() < cp_prob:
-            mean = np.random.normal(mean0, 1 / prec0)
-            means.append(mean)
-            cpts.append(t)
-        data.append(np.random.normal(means[-1], 1))
-    return data, cpts
+            meanx = np.random.normal(mean0, var0)
+            cps.append(t)
+        data.append(np.random.normal(meanx, varx))
+    return data, cps
 
 
 # -----------------------------------------------------------------------------
 
-def plot_posterior(T, data, R, cpts):
+def plot_posterior(T, data, R, cps):
     """Plot data, run length posterior, and groundtruth changepoints.
     """
-    fig, axes = plt.subplots(2, 1, figsize=(20, 10))
+    fig, axes = plt.subplots(2, 1, figsize=(20,10))
+
     ax1, ax2 = axes
 
     ax1.scatter(range(0, T), data)
@@ -127,18 +138,14 @@ def plot_posterior(T, data, R, cpts):
     ax1.set_xlim([0, T])
     ax1.margins(0)
 
-    norm = LogNorm(vmin=0.0001, vmax=1)
-    ax2.imshow(np.rot90(R), aspect='auto', cmap='gray_r', norm=norm)
+    ax2.imshow(np.rot90(R), aspect='auto', cmap='gray_r', 
+               norm=LogNorm(vmin=0.0001, vmax=1))
     ax2.set_xlim([0, T])
-    # This just reverses the y-tick marks.
-    ticks = list(range(0, T+1, 50))
-    ax2.set_yticks(ticks)
-    ax2.set_yticklabels(ticks[::-1])
     ax2.margins(0)
 
-    for cpt in cpts:
-        ax1.axvline(cpt, c='r', ls='dotted')
-        ax2.axvline(cpt, c='r', ls='dotted')
+    for cp in cps:
+        ax1.axvline(cp, c='red', ls='dotted')
+        ax2.axvline(cp, c='red', ls='dotted')
 
     plt.tight_layout()
     plt.show()
@@ -147,16 +154,14 @@ def plot_posterior(T, data, R, cpts):
 # -----------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    T = 300         # Number of observations.
-    cp_prob = 1/50  # Constant prior on changepoint probability.
-    mean0 = 0       # Prior on Gaussian mean.
-    prec0 = 0.2     # Prior on Gaussian precision.
+    T      = 300   # Number of observations.
+    hazard = 1/50  # Constant prior on changepoint probability.
+    mean0  = 0     # The prior mean on the mean parameter.
+    var0   = 3     # The prior variance for mean parameter.
+    varx   = 1     # The known variance of the data.
 
-    data, cpts = generate_data(mean0, prec0, T, cp_prob)
-    model = NormalKnownPrecision(mean0, prec0)
-    R = bocd(data=data, model=model, hazard=1/50)
-    # The model becomes numerically unstable for large `T` because the mass is
-    # distributed across a support whose size is increasing.
-    for row in R:
-        assert np.isclose(np.sum(row), 1)
-    plot_posterior(T, data, R, cpts)
+    data, cps = generate_data(varx, mean0, var0, T, hazard)
+    model     = GaussianUnknownMean(mean0, var0, varx)
+    R         = bocd(data, model, hazard)
+
+    plot_posterior(T, data, R, cps)
