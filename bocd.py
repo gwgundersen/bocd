@@ -2,11 +2,15 @@
 Author: Gregory Gundersen
 
 Python implementation of Bayesian online changepoint detection for a normal
-model with unknown mean parameter. For details, see Adams & MacKay 2007:
+model with unknown mean parameter. For algorithm details, see
 
+    Adams & MacKay 2007
     "Bayesian Online Changepoint Detection"
     https://arxiv.org/abs/0710.3742
 
+For Bayesian inference details about the Gaussian, see:
+
+    Murphy 2007
     "Conjugate Bayesian analysis of the Gaussian distribution"
     https://www.cs.ubc.ca/~murphyk/Papers/bayesGauss.pdf
 
@@ -20,6 +24,7 @@ import matplotlib.pyplot as plt
 from   matplotlib.colors import LogNorm
 import numpy as np
 from   scipy.stats import norm
+from   scipy.special import logsumexp
 
 
 # -----------------------------------------------------------------------------
@@ -28,40 +33,51 @@ def bocd(data, model, hazard):
     """Return run length posterior using Algorithm 1 in Adams & MacKay 2007.
     """
     # 1. Initialize lower triangular matrix representing the posterior as
-    # function of time. Model parameters are initialized in the model class.
-    R       = np.zeros((T+1, T+1))
-    R[0, 0] = 1
-    message = np.array([1])
+    #    function of time. Model parameters are initialized in the model class.
+    #    
+    #    When we exponentiate R at the end, exp(-inf) --> 0, which is nice for
+    #    visualization.
+    #
+    log_R       = -np.inf * np.ones((T+1, T+1))
+    log_R[0, 0] = 0              # log 0 == 1
+    pmean       = np.empty(T)    # Model's predictive mean.
+    pvar        = np.empty(T)    # Model's predictive variance. 
+    log_message = np.array([0])  # log 0 == 1
+    log_H       = np.log(hazard)
+    log_1mH     = np.log(1 - hazard)
 
     for t in range(1, T+1):
         # 2. Observe new datum.
         x = data[t-1]
 
+        # Make model predictions.
+        pmean[t-1] = np.sum(np.exp(log_R[t-1, :t]) * model.mean_params[:t])
+        pvar[t-1]  = np.sum(np.exp(log_R[t-1, :t]) * 1./model.prec_params[:t])
+        
         # 3. Evaluate predictive probabilities.
-        pis = model.pred_prob(t, x)
+        log_pis = model.log_pred_prob(t, x)
 
         # 4. Calculate growth probabilities.
-        growth_probs = pis * message * (1 - hazard)
+        log_growth_probs = log_pis + log_message + log_1mH
 
         # 5. Calculate changepoint probabilities.
-        cp_prob = sum(pis * message * hazard)
+        log_cp_prob = logsumexp(log_pis + log_message + log_H)
 
         # 6. Calculate evidence
-        new_joint = np.append(cp_prob, growth_probs)
-        evidence  = np.sum(new_joint)
+        new_log_joint = np.append(log_cp_prob, log_growth_probs)
 
         # 7. Determine run length distribution.
-        R[t, :t+1] = new_joint
-        if evidence > 0:
-            R[t, :t+1] /= evidence
+        log_R[t, :t+1]  = new_log_joint
+        log_R[t, :t+1] -= logsumexp(new_log_joint)
 
         # 8. Update sufficient statistics.
         model.update_params(t, x)
 
         # Setup message passing.
-        message = new_joint
+        log_message = new_log_joint
 
-    return R
+    R = np.exp(log_R)
+    return R, pmean, pvar
 
 
 # -----------------------------------------------------------------------------
@@ -81,18 +97,15 @@ class GaussianUnknownMean:
         self.varx  = varx
         self.mean_params = np.array([mean0])
         self.prec_params = np.array([1/var0])
-
-    def pred_prob(self, t, x):
-        """Compute predictive probabilities pi, i.e. the posterior predictive
+    
+    def log_pred_prob(self, t, x):
+        """Compute predictive probabilities \pi, i.e. the posterior predictive
         for each run length hypothesis.
         """
-        preds = np.empty(t)
-        for n in range(t):
-            # Posterior predictive: see eq. 40 in (Murphy 2007).
-            mean_n   = self.mean_params[n]
-            var_n    = 1. / self.prec_params[n]
-            preds[n] = norm.pdf(x, mean_n, var_n + self.varx)
-        return preds
+        # Posterior predictive: see eq. 40 in (Murphy 2007).
+        post_means = self.mean_params[:t]
+        post_vars  = 1. / self.prec_params[:t] + self.varx
+        return norm.logpdf(x, post_means, post_vars)
     
     def update_params(self, t, x):
         """Upon observing a new datum x at time t, update all run length 
@@ -126,9 +139,7 @@ def generate_data(varx, mean0, var0, T, cp_prob):
 
 # -----------------------------------------------------------------------------
 
-def plot_posterior(T, data, R, cps):
-    """Plot data, run length posterior, and groundtruth changepoints.
-    """
+def plot_posterior(T, data, cps, R, pmean, pvar):
     fig, axes = plt.subplots(2, 1, figsize=(20,10))
 
     ax1, ax2 = axes
@@ -137,6 +148,12 @@ def plot_posterior(T, data, R, cps):
     ax1.plot(range(0, T), data)
     ax1.set_xlim([0, T])
     ax1.margins(0)
+    
+    # Plot predictions.
+    ax1.plot(range(0, T), pmean, c='k')
+    _2std = 2 * np.sqrt(pvar)
+    ax1.plot(range(0, T), pmean - _2std, c='k', ls='--')
+    ax1.plot(range(0, T), pmean + _2std, c='k', ls='--')
 
     ax2.imshow(np.rot90(R), aspect='auto', cmap='gray_r', 
                norm=LogNorm(vmin=0.0001, vmax=1))
@@ -154,14 +171,14 @@ def plot_posterior(T, data, R, cps):
 # -----------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    T      = 300   # Number of observations.
-    hazard = 1/50  # Constant prior on changepoint probability.
-    mean0  = 0     # The prior mean on the mean parameter.
-    var0   = 3     # The prior variance for mean parameter.
-    varx   = 1     # The known variance of the data.
+    T      = 500    # Number of observations.
+    hazard = 1/100  # Constant prior on changepoint probability.
+    mean0  = 0      # The prior mean on the mean parameter.
+    var0   = 3      # The prior variance for mean parameter.
+    varx   = 1      # The known variance of the data.
 
-    data, cps = generate_data(varx, mean0, var0, T, hazard)
-    model     = GaussianUnknownMean(mean0, var0, varx)
-    R         = bocd(data, model, hazard)
+    data, cps      = generate_data(varx, mean0, var0, T, hazard)
+    model          = GaussianUnknownMean(mean0, var0, varx)
+    R, pmean, pvar = bocd(data, model, hazard)
 
-    plot_posterior(T, data, R, cps)
+    plot_posterior(T, data, cps, R, pmean, pvar)
