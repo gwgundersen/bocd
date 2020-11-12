@@ -73,7 +73,7 @@ def bocd(data, model, hazard):
         # 8. Update sufficient statistics.
         model.update_params(t, x)
 
-        # Setup message passing.
+        # Pass message.
         log_message = new_log_joint
 
     R = np.exp(log_R)
