@@ -52,7 +52,7 @@ def bocd(data, model, hazard):
 
         # Make model predictions.
         pmean[t-1] = np.sum(np.exp(log_R[t-1, :t]) * model.mean_params[:t])
-        pvar[t-1]  = np.sum(np.exp(log_R[t-1, :t]) * 1./model.prec_params[:t])
+        pvar[t-1]  = np.sum(np.exp(log_R[t-1, :t]) * model.var_params[:t])
         
         # 3. Evaluate predictive probabilities.
         log_pis = model.log_pred_prob(t, x)
@@ -104,7 +104,7 @@ class GaussianUnknownMean:
         """
         # Posterior predictive: see eq. 40 in (Murphy 2007).
         post_means = self.mean_params[:t]
-        post_vars  = 1. / self.prec_params[:t] + self.varx
+        post_vars  = self.var_params[:t]
         return norm.logpdf(x, post_means, post_vars)
     
     def update_params(self, t, x):
@@ -119,6 +119,11 @@ class GaussianUnknownMean:
                             (x / self.varx)) / new_prec_params
         self.mean_params = np.append([self.mean0], new_mean_params)
 
+    @property
+    def var_params(self):
+        """Helper function for computing the posterior variance.
+        """
+        return 1./self.prec_params + self.varx
 
 # -----------------------------------------------------------------------------
 
