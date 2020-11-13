@@ -104,8 +104,8 @@ class GaussianUnknownMean:
         """
         # Posterior predictive: see eq. 40 in (Murphy 2007).
         post_means = self.mean_params[:t]
-        post_vars  = self.var_params[:t]
-        return norm.logpdf(x, post_means, post_vars)
+        post_stds  = np.sqrt(self.var_params[:t])
+        return norm(post_means, post_stds).logpdf(x)
     
     def update_params(self, t, x):
         """Upon observing a new datum x at time t, update all run length 
@@ -176,10 +176,10 @@ def plot_posterior(T, data, cps, R, pmean, pvar):
 # -----------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    T      = 500    # Number of observations.
+    T      = 1000   # Number of observations.
     hazard = 1/100  # Constant prior on changepoint probability.
     mean0  = 0      # The prior mean on the mean parameter.
-    var0   = 3      # The prior variance for mean parameter.
+    var0   = 2      # The prior variance for mean parameter.
     varx   = 1      # The known variance of the data.
 
     data, cps      = generate_data(varx, mean0, var0, T, hazard)
