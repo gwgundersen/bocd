@@ -38,6 +38,7 @@ def bocd(data, model, hazard):
     #    When we exponentiate R at the end, exp(-inf) --> 0, which is nice for
     #    visualization.
     #
+    T           = len(data)
     log_R       = -np.inf * np.ones((T+1, T+1))
     log_R[0, 0] = 0              # log 0 == 1
     pmean       = np.empty(T)    # Model's predictive mean.
